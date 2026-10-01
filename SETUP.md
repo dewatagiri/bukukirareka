@@ -49,7 +49,8 @@ python bot.py
 Nobody else can use the bot.
 
 ## 6. Keep it running
-- **Simple:** your PC must be on. Use Windows Task Scheduler with the trigger "At log on", action `.venv\Scripts\pythonw.exe bot.py`, and "Start in" set to the bot folder.
+- **Easiest:** in the bot folder run `powershell -ExecutionPolicy Bypass -File install_autostart.ps1` once. It creates the "BukuKira" task (starts at log on, no window) which runs `run_forever.py`; that restarts the bot 15 s after any crash. Output goes to `bot.log`. To stop it: `Stop-ScheduledTask BukuKira` (and `Unregister-ScheduledTask BukuKira` to remove it).
+- **Manual:** your PC must be on. Use Windows Task Scheduler with the trigger "At log on", action `.venv\Scripts\pythonw.exe bot.py`, and "Start in" set to the bot folder.
 - **Better (later):** a small VPS (~RM20/month), or run it inside the Hermes setup.
 - If the PC is off, her messages wait in Telegram. They're processed when the bot starts again, for up to about 24 hours.
 

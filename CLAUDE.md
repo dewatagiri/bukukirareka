@@ -13,6 +13,7 @@ guide) for the full picture.
 - `core.py` — pure functions: stock, cost, profit, report math (no I/O)
 - `store.py` — `SheetStore` (Google Sheets) and `MemoryStore` (in-memory, used by tests)
 - `test_offline.py` — tests with no API keys needed (`MemoryStore` + fixed clock)
+- `run_forever.py` + `install_autostart.ps1` — Windows auto-start at log on with crash restart (SETUP.md §6)
 
 ## Environment status (this machine, as of 2026-09-26)
 - `.venv` created, `requirements.txt` installed.

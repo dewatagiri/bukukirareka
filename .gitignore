@@ -6,3 +6,7 @@ service_account*
 __pycache__/
 *.pyc
 *.pickle
+*.log
+credentials*.json
+*.pem
+*.key
