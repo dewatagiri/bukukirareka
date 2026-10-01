@@ -81,11 +81,18 @@ She can add products three ways:
 - **Stok dalam tangan** = units on hand × cost. This is the cash tied up in stock.
 - A sale marked *Belum bayar* counts as profit but not as cash in, until she says the customer has paid.
 
-## Limits in v1 (candidates for v2)
-- One user and one shop. There's no WhatsApp yet; the logic ports over unchanged.
+## Upgrading from v1
+Just pull and restart. On start the bot adds three columns to the end of the Transaksi
+tab (`Dibayar (RM)`, `Batal`, `Kumpulan`); existing rows stay as they are. Optionally add
+the new `DEBT_REMINDER_*` / `STATE_FILE` lines from `.env.example` (the defaults work).
+
+## Limits in v1.1 (candidates for v2)
+- One user and one shop. The bot runs in Telegram only; WhatsApp is used just for sending
+  payment reminders to customers (a link she taps, not an integration).
 - Expiry is tracked per product, not per batch.
 - A payment counts as cash in the period of the original sale, not the date the customer paid.
-- The EDIT button can't undo a row already saved. Delete or fix that row in the Sheet instead.
+- Undo (`batal yang tadi` / `/batal`) marks the last saved entry `Batal = YA`. Undoing a
+  restock doesn't roll back the average cost in the Produk tab; check it by hand.
 - No product photos or catalogue.
 
 ## Files

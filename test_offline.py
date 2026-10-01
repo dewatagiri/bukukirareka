@@ -1,4 +1,5 @@
 """Offline tests: no Telegram, no Gemini, no Google. Run: python test_offline.py"""
+import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -6,6 +7,7 @@ from core import match_product, current_stock, BELUM_BAYAR
 from service import BukuKira
 from store import MemoryStore
 
+sys.stdout.reconfigure(encoding="utf-8")  # emoji in replies; Windows console defaults to cp1252
 TZ = ZoneInfo("Asia/Kuala_Lumpur")
 clock = {"now": datetime(2026, 9, 20, 10, 0, tzinfo=TZ)}
 s = MemoryStore()
@@ -75,6 +77,61 @@ assert d.tarikh == "2026-09-20" and d.jumlah == 1200 and d.kategori == "Lain-lai
 # 11. clarifying question passes through
 r, p = bk.prepare({"intent": "tak_faham", "soalan": "Berapa ringgit jumlah resit ni?"})
 assert p is None and "Berapa" in r
+
+# 12. stock adjustment: 1 serum damaged -> stock 12, loss at cost RM27 hits profit (not cash)
+run({"intent": "rekod", "transaksi": [{"jenis": "Pelarasan Stok", "kategori": "Rosak", "produk": "serum", "kuantiti": 1}]})
+st = current_stock(s.products(), s.transactions())
+assert st["Serum Vit C"] == 12, st
+rep = bk.report("bulan")
+assert "UNTUNG BERSIH: RM342.50" in rep and "Stok rosak/sampel/hilang: RM27.00" in rep, rep
+
+# 13. adjustment the other way: found 2 extra toner -> stock 6, no money impact
+run({"intent": "rekod", "transaksi": [{"jenis": "Pelarasan Stok", "kategori": "Tambah", "produk": "toner", "kuantiti": 2}]})
+assert current_stock(s.products(), s.transactions())["Toner Rose"] == 6
+assert "UNTUNG BERSIH: RM342.50" in bk.report("bulan")
+
+# 14. partial payment, applied oldest sale first
+run({"intent": "rekod", "transaksi": [
+    {"jenis": "Jualan", "produk": "toner", "kuantiti": 1, "pihak": "Mira", "status_bayaran": "Belum bayar", "tarikh": "2026-09-15"},
+    {"jenis": "Jualan", "produk": "toner", "kuantiti": 2, "pihak": "Mira", "status_bayaran": "Belum bayar", "tarikh": "2026-09-18"}]})
+run({"intent": "bayar_hutang", "pihak_bayar": "mira", "jumlah_bayar": 50})
+mira = [x for x in s.transactions() if x["Pelanggan/Pihak"] == "Mira"]
+assert mira[0]["Status bayaran"] != BELUM_BAYAR, mira[0]
+assert mira[1]["Status bayaran"] == BELUM_BAYAR and mira[1]["Dibayar (RM)"] == 15, mira[1]
+assert "Mira: RM55.00" in bk.debts(), bk.debts()
+run({"intent": "bayar_hutang", "pihak_bayar": "mira", "jumlah_bayar": 55})
+assert "Tiada siapa berhutang" in bk.debts()
+
+# 15. undo last entry: marked cancelled, ignored everywhere, IDs keep counting
+before = bk.report("bulan")
+n_before = len(s.transactions())
+run({"intent": "rekod", "transaksi": [
+    {"jenis": "Belanja", "kategori": "Pos", "jumlah": 10},
+    {"jenis": "Jualan", "produk": "serum", "kuantiti": 3}]})
+r, p = bk.prepare({"intent": "batal_terakhir"})
+assert p and len(p["ids"]) == 2 and "Pos" in r, r
+bk.commit(p, "teks")
+assert bk.report("bulan") == before
+assert current_stock(s.products(), [t for t in s.transactions() if t.get("Batal") != "YA"])["Serum Vit C"] == 12
+assert [t["Batal"] for t in s.transactions()[-2:]] == ["YA", "YA"]
+assert s.next_id() == f"T{n_before + 3:05d}"
+# undo again -> offers the batch before that (the two Mira sales)
+_, p = bk.prepare({"intent": "batal_terakhir"})
+assert [t["Pelanggan/Pihak"] for t in s.transactions() if t["ID"] in p["ids"]] == ["Mira", "Mira"]
+
+# 16. debt reminders: nudge at 7, 14, 21... days, with a WhatsApp link (her customers use WA)
+run({"intent": "rekod", "transaksi": [
+    {"jenis": "Jualan", "produk": "serum", "kuantiti": 1, "pihak": "Kak Ida", "status_bayaran": "Belum bayar"}]})
+clock["now"] = datetime(2026, 9, 26, 10, 0, tzinfo=TZ)
+assert bk.due_reminders() == []  # 6 days
+clock["now"] = datetime(2026, 9, 27, 10, 0, tzinfo=TZ)
+due = bk.due_reminders()
+assert [d["nama"] for d in due] == ["Kak Ida"] and due[0]["hari"] == 7, due
+msg = bk.reminder_text(due[0])
+assert "Kak Ida" in msg and "RM45.00" in msg, msg
+link = bk.whatsapp_link(due[0])
+assert link.startswith("https://wa.me/?text=") and "Kak%20Ida" in link, link
+assert "(7 hari)" in bk.debts()
 
 print(bk.debts())
 print("\nALL TESTS PASSED")

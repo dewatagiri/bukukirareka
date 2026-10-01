@@ -5,6 +5,11 @@ Types of transaction (column "Jenis"):
   Komisen Affiliate - TikTok/Shopee payout (income)
   Beli Stok         - stock bought from supplier (cash out, adds stock)
   Belanja           - other costs (postage, packaging, props, ads...)
+  Pelarasan Stok    - stock that left without a sale (damaged, samples, own use, lost),
+                      or "Tambah" for stock that came back / was found. Losses count at
+                      cost against profit, never against cash (that was paid at Beli Stok).
+
+A row with Batal = "YA" was undone: it stays in the Sheet but every calculation skips it.
 """
 from __future__ import annotations
 
@@ -13,17 +18,24 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from urllib.parse import quote
 
 JUALAN, KOMISEN, BELI_STOK, BELANJA = "Jualan", "Komisen Affiliate", "Beli Stok", "Belanja"
-JENIS_ALL = [JUALAN, KOMISEN, BELI_STOK, BELANJA]
+PELARASAN = "Pelarasan Stok"
+JENIS_ALL = [JUALAN, KOMISEN, BELI_STOK, BELANJA, PELARASAN]
 KATEGORI_BELANJA = ["Pos", "Pembungkusan", "Kandungan/Props", "Iklan/Boost", "Lain-lain"]
+STOK_KELUAR = ["Rosak", "Sampel", "Guna sendiri", "Hilang"]  # stock out, loss at cost
+STOK_MASUK = "Tambah"                                         # stock back in, no money
+KATEGORI_PELARASAN = STOK_KELUAR + [STOK_MASUK]
 DAH_BAYAR, BELUM_BAYAR = "Dah bayar", "Belum bayar"
 
 PRODUK_HEADERS = ["Nama", "Nama lain", "Kos seunit (RM)", "Harga jual (RM)",
                   "Stok awal", "Stok semasa", "Tarikh luput", "Aktif", "Catatan"]
 TRANSAKSI_HEADERS = ["ID", "Tarikh", "Jenis", "Kategori", "Produk", "Kuantiti",
                      "Harga seunit (RM)", "Jumlah (RM)", "Kos barang (RM)", "Untung (RM)",
-                     "Pelanggan/Pihak", "Status bayaran", "Sumber", "Catatan", "Direkod pada"]
+                     "Pelanggan/Pihak", "Status bayaran", "Sumber", "Catatan", "Direkod pada",
+                     # v1.1: appended at the end so existing Sheets keep their columns
+                     "Dibayar (RM)", "Batal", "Kumpulan"]
 
 
 def num(v, default=0.0) -> float:
@@ -48,6 +60,11 @@ def parse_date(s) -> date | None:
         return date.fromisoformat(str(s).strip()[:10])
     except ValueError:
         return None
+
+
+def live(txns: list[dict]) -> list[dict]:
+    """Rows that count: everything except undone (Batal = YA) rows."""
+    return [t for t in txns if str(t.get("Batal", "")).strip().upper() != "YA"]
 
 
 # ---------------------------------------------------------------- products
@@ -107,6 +124,8 @@ def current_stock(products: list[Product], txns: list[dict]) -> dict[str, float]
             stock[prod] += q
         elif t.get("Jenis") == JUALAN:
             stock[prod] -= q
+        elif t.get("Jenis") == PELARASAN:
+            stock[prod] += q if t.get("Kategori") == STOK_MASUK else -q
     return stock
 
 
@@ -142,6 +161,7 @@ def complete_draft(raw: dict, products: list[Product], today: date) -> Draft:
     if jenis not in JENIS_ALL:
         jl = jenis.lower()
         jenis = (JUALAN if "jual" in jl else KOMISEN if ("komisen" in jl or "affiliate" in jl)
+                 else PELARASAN if ("pelarasan" in jl or "rosak" in jl or "sampel" in jl)
                  else BELI_STOK if "stok" in jl else BELANJA)
     d = Draft(jenis=jenis)
     d.kategori = raw.get("kategori") or ""
@@ -184,6 +204,17 @@ def complete_draft(raw: dict, products: list[Product], today: date) -> Draft:
                 d.warnings.append("Kos seunit produk ni belum ada - untung dikira RM0 kos. Isi dalam Sheet (tab Produk).")
         else:
             d.kategori = "Stok"
+    elif jenis == PELARASAN:
+        p = match_product(raw.get("produk"), products)
+        d.produk = p.nama if p else (raw.get("produk") or "").strip().title()
+        if not p:
+            d.warnings.append("Produk ni tiada dalam senarai - stok tak akan berubah.")
+        d.kategori = next((k for k in KATEGORI_PELARASAN
+                           if k.lower() == d.kategori.strip().lower()), "Rosak")
+        d.kuantiti = abs(q) or 1
+        if d.kategori != STOK_MASUK:  # valued at cost: what the loss actually cost her
+            d.harga_seunit = p.kos if p else 0.0
+            d.jumlah = d.kos_barang = round(d.kuantiti * d.harga_seunit, 2)
     else:
         d.jumlah = j or round(q * h, 2)
         if not d.jumlah:
@@ -197,12 +228,14 @@ def complete_draft(raw: dict, products: list[Product], today: date) -> Draft:
     return d
 
 
-def draft_to_row(d: Draft, txn_id: str, source: str, now_iso: str) -> list:
+def draft_to_row(d: Draft, txn_id: str, source: str, now_iso: str, batch: str = "") -> list:
+    """batch = ID of the first row saved in the same confirm; undo removes a whole batch."""
     untung = round(d.jumlah - d.kos_barang, 2) if d.jenis == JUALAN else ""
     return [txn_id, d.tarikh, d.jenis, d.kategori, d.produk,
             d.kuantiti or "", d.harga_seunit or "", d.jumlah,
-            d.kos_barang if d.jenis == JUALAN else "", untung,
-            d.pihak, d.status_bayaran, source, d.catatan, now_iso]
+            d.kos_barang if d.jenis in (JUALAN, PELARASAN) else "", untung,
+            d.pihak, d.status_bayaran, source, d.catatan, now_iso,
+            "", "", batch]
 
 
 def describe_draft(d: Draft) -> str:
@@ -216,6 +249,11 @@ def describe_draft(d: Draft) -> str:
         s = f"📦 BELI STOK: {d.kuantiti:g} x {d.produk} @ {rm(d.harga_seunit)} = {rm(d.jumlah)}"
         if d.pihak:
             s += f"\n   Dari: {d.pihak}"
+    elif d.jenis == PELARASAN:
+        arah = "+" if d.kategori == STOK_MASUK else "-"
+        s = f"🔧 PELARASAN STOK ({d.kategori}): {arah}{d.kuantiti:g} {d.produk}"
+        if d.jumlah:
+            s += f"\n   Nilai kos: {rm(d.jumlah)} (ditolak dari untung)"
     elif d.jenis == KOMISEN:
         s = f"💰 KOMISEN AFFILIATE ({d.kategori}): {rm(d.jumlah)}"
     else:
@@ -230,6 +268,31 @@ def describe_draft(d: Draft) -> str:
     for w in d.warnings:
         s += f"\n   ⚠️ {w}"
     return s
+
+
+def describe_row(t: dict) -> str:
+    """One saved Transaksi row, short (used when offering to undo it)."""
+    jenis, j = t.get("Jenis"), rm(num(t.get("Jumlah (RM)")))
+    if jenis in (JUALAN, BELI_STOK):
+        s = f"{jenis}: {num(t.get('Kuantiti')):g} x {t.get('Produk')} = {j}"
+    elif jenis == PELARASAN:
+        s = f"{jenis} ({t.get('Kategori')}): {num(t.get('Kuantiti')):g} {t.get('Produk')}"
+    else:
+        s = f"{jenis} ({t.get('Kategori')}): {j}"
+    if t.get("Pelanggan/Pihak"):
+        s += f" - {t.get('Pelanggan/Pihak')}"
+    return f"{t.get('ID')} {t.get('Tarikh')} {s}"
+
+
+def last_batch(txns: list[dict]) -> list[dict]:
+    """Rows saved by the most recent confirm that hasn't been undone.
+    Rows from before v1.1 have no Kumpulan, so each counts as its own batch."""
+    rows = live(txns)
+    if not rows:
+        return []
+    last = max(rows, key=lambda t: num(str(t.get("ID", "")).lstrip("T")))
+    key = last.get("Kumpulan") or last.get("ID")
+    return [t for t in rows if (t.get("Kumpulan") or t.get("ID")) == key]
 
 
 # ----------------------------------------------------------------- reports
@@ -250,6 +313,8 @@ def period_summary(txns: list[dict], start: date, end: date) -> dict:
             s["kos_barang"] += num(t.get("Kos barang (RM)"))
             if t.get("Status bayaran") != BELUM_BAYAR:
                 s["tunai_masuk"] += j
+            else:  # part-paid so far
+                s["tunai_masuk"] += num(t.get("Dibayar (RM)"))
         elif jenis == KOMISEN:
             s["komisen"] += j
             s["tunai_masuk"] += j
@@ -260,18 +325,75 @@ def period_summary(txns: list[dict], start: date, end: date) -> dict:
             belanja[t.get("Kategori") or "Lain-lain"] += j
             s["belanja"] += j
             s["tunai_keluar"] += j
+        elif jenis == PELARASAN and t.get("Kategori") != STOK_MASUK:
+            s["stok_hapus"] += j
     s["untung_jualan"] = s["jualan"] - s["kos_barang"]
-    s["untung_bersih"] = s["untung_jualan"] + s["komisen"] - s["belanja"]
+    s["untung_bersih"] = s["untung_jualan"] + s["komisen"] - s["belanja"] - s["stok_hapus"]
     s["tunai_bersih"] = s["tunai_masuk"] - s["tunai_keluar"]
     return {"s": dict(s), "belanja": dict(belanja)}
+
+
+def balance(t: dict) -> float:
+    """What is still owed on one sale row."""
+    return round(num(t.get("Jumlah (RM)")) - num(t.get("Dibayar (RM)")), 2)
 
 
 def unpaid(txns: list[dict]) -> dict[str, float]:
     out = defaultdict(float)
     for t in txns:
         if t.get("Jenis") == JUALAN and t.get("Status bayaran") == BELUM_BAYAR:
-            out[t.get("Pelanggan/Pihak") or "(tiada nama)"] += num(t.get("Jumlah (RM)"))
+            out[t.get("Pelanggan/Pihak") or "(tiada nama)"] += balance(t)
     return dict(out)
+
+
+def debt_list(txns: list[dict], today: date) -> list[dict]:
+    """One entry per customer who owes: name, balance, age in days of the oldest
+    unpaid sale, and the rows. Biggest balance first."""
+    by_name: dict[str, list[dict]] = defaultdict(list)
+    for t in txns:
+        if t.get("Jenis") == JUALAN and t.get("Status bayaran") == BELUM_BAYAR:
+            by_name[t.get("Pelanggan/Pihak") or "(tiada nama)"].append(t)
+    out = []
+    for nama, rows in by_name.items():
+        dates = [d for d in (parse_date(t.get("Tarikh")) for t in rows) if d]
+        out.append({"nama": nama, "baki": round(sum(balance(t) for t in rows), 2),
+                    "hari": (today - min(dates)).days if dates else 0, "rows": rows})
+    return sorted(out, key=lambda x: -x["baki"])
+
+
+def allocate_payment(rows: list[dict], amount: float | None) -> tuple[list[tuple], float]:
+    """Apply a payment to unpaid sale rows, oldest first.
+    Returns ([(txn_id, dibayar_total, status), ...], amount left over).
+    amount None = pays everything owed."""
+    rows = sorted(rows, key=lambda t: (str(t.get("Tarikh")), str(t.get("ID"))))
+    left = sum(balance(t) for t in rows) if amount is None else amount
+    updates = []
+    for t in rows:
+        if left <= 0:
+            break
+        owed = balance(t)
+        pay = min(owed, left)
+        left = round(left - pay, 2)
+        paid_total = round(num(t.get("Dibayar (RM)")) + pay, 2)
+        updates.append((t["ID"], paid_total, DAH_BAYAR if pay >= owed else BELUM_BAYAR))
+    return updates, max(left, 0.0)
+
+
+def reminder_text(debt: dict) -> str:
+    """Friendly BM payment reminder she can send to the customer."""
+    items = []
+    for t in debt["rows"]:
+        d = parse_date(t.get("Tarikh"))
+        items.append(f"{num(t.get('Kuantiti')):g} {t.get('Produk')}" + (f" ({d.strftime('%d/%m')})" if d else ""))
+    return (f"Hai {debt['nama']} 😊 Sekadar peringatan mesra, ada baki {rm(debt['baki'])} "
+            f"untuk {', '.join(items)} yang belum dijelaskan. Boleh bayar bila senang ya. "
+            f"Terima kasih! 🙏")
+
+
+def whatsapp_link(text: str) -> str:
+    """She runs the bot in Telegram, but her customers are on WhatsApp: this opens
+    WhatsApp's contact picker with the reminder pre-filled."""
+    return "https://wa.me/?text=" + quote(text, safe="")
 
 
 def stock_insights(products: list[Product], txns: list[dict], today: date,
@@ -320,6 +442,8 @@ def format_report(title: str, txns: list[dict], products: list[Product],
     lines.append(f"BELANJA LAIN: {rm(g('belanja'))}")
     for k, v in sorted(bel.items(), key=lambda x: -x[1]):
         lines.append(f"  - {k}: {rm(v)}")
+    if g("stok_hapus"):
+        lines.append(f"Stok rosak/sampel/hilang: {rm(g('stok_hapus'))} (nilai kos)")
     lines += ["", f"✅ UNTUNG BERSIH: {rm(g('untung_bersih'))}", "",
               "ALIRAN TUNAI (duit sebenar masuk/keluar)",
               f"  Masuk: {rm(g('tunai_masuk'))}",

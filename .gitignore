@@ -5,3 +5,4 @@ service_account*
 .venv/
 __pycache__/
 *.pyc
+*.pickle

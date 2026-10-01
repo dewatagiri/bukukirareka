@@ -34,8 +34,17 @@ For what it's like to actually use day-to-day (in Bahasa Malaysia), see
 | `store.py` | `SheetStore` (Google Sheets) and `MemoryStore` (in-memory, used by tests) |
 | `test_offline.py` | tests that run with no API keys — `python test_offline.py` |
 
-## Limits (v1)
+## New in v1.1
 
-One user and one shop, no WhatsApp yet, expiry tracked per product not per batch,
-the EDIT button can't undo an already-saved row (fix it directly in the Sheet's
-Transaksi tab instead), no product photos/catalogue. See SETUP.md for the full list.
+- **Undo**: "batal yang tadi" or `/batal` cancels the last saved entry (kept in the Sheet, marked `Batal`).
+- **Stock adjustments**: damaged, samples, own use, lost, or found stock, so stock counts match reality.
+  Losses are counted at cost against profit.
+- **Partial payments**: "Mira bayar RM50 dulu" pays off her oldest sales first and keeps the balance.
+- **Debt reminders**: `hutang` shows how many days each debt is old, with a button per customer that
+  opens WhatsApp with a polite reminder ready to send. The bot also nudges her at 7, 14, 21... days.
+- **Survives restarts**: an entry waiting for YA/EDIT/BATAL is no longer lost when the bot restarts.
+
+## Limits
+
+One user and one shop, expiry tracked per product not per batch, no product
+photos/catalogue. See SETUP.md for the full list.

@@ -23,7 +23,9 @@ and return ONLY a JSON object with these keys:
   "intent": one of
      "rekod"        - record one or more transactions
      "produk_baru"  - add new product(s) to the product list
-     "bayar_hutang" - a customer has now paid what they owed
+     "bayar_hutang" - a customer has now paid what they owed (all of it, or part)
+     "batal_terakhir" - undo the entry she just saved ("batal yang tadi", "salah, padam
+                      yang last", "undo")
      "laporan"      - she asks for a report / summary
      "stok"         - she asks about stock
      "hutang"       - she asks who still owes her
@@ -31,9 +33,10 @@ and return ONLY a JSON object with these keys:
   "transkrip": for voice notes, what she said (original language); else "",
   "transaksi": [  // for intent "rekod"
      {{
-       "jenis": "Jualan" | "Komisen Affiliate" | "Beli Stok" | "Belanja",
+       "jenis": "Jualan" | "Komisen Affiliate" | "Beli Stok" | "Belanja" | "Pelarasan Stok",
        "kategori": for Belanja one of "Pos","Pembungkusan","Kandungan/Props","Iklan/Boost","Lain-lain";
-                   for Komisen Affiliate one of "TikTok","Shopee","Lain"; else "",
+                   for Komisen Affiliate one of "TikTok","Shopee","Lain";
+                   for Pelarasan Stok one of "Rosak","Sampel","Guna sendiri","Hilang","Tambah"; else "",
        "produk": product name - use the EXACT name from the list if it matches (any alias,
                  typo or shortening), otherwise the name as she said it; "" if not a product line,
        "kuantiti": number or null,
@@ -51,6 +54,8 @@ and return ONLY a JSON object with these keys:
        "harga_jual": number|null, "stok_awal": number|null, "tarikh_luput": "YYYY-MM-DD"|null}}
   ],
   "pihak_bayar": for "bayar_hutang": the customer's name, else "",
+  "jumlah_bayar": for "bayar_hutang": RM amount paid if she says one ("Mira bayar RM50 dulu"),
+                  null if she just says they paid / paid everything,
   "tempoh": for "laporan": "minggu" | "bulan" | "bulan_lepas" (default "bulan"),
   "soalan": if something essential is missing or unreadable, ONE short question in BM, else ""
 }}
@@ -61,6 +66,13 @@ Rules:
 - Commission / payout / "komisen" / "affiliate" / TikTok or Shopee payout screen = Komisen Affiliate.
 - Postage (J&T, PosLaju, Ninja Van, Shopee Xpress), boxes, bubble wrap, props, ring light,
   samples for content, TikTok/FB ads or boost = Belanja with the right kategori.
+- Her OWN stock leaving without a sale = Pelarasan Stok: damaged/pecah/bocor = "Rosak",
+  given free or opened for a review/content = "Sampel", she used it herself = "Guna sendiri",
+  missing = "Hilang". Extra stock she finds (recount, sample came back unused) = "Tambah".
+  No money amount needed; only produk and kuantiti. A customer returning a bought item
+  for a refund is NOT handled yet: use intent "tak_faham" and set soalan to suggest she
+  undoes the sale ("batal yang tadi") or fixes it in the Sheet.
+  (Buying samples/props with money is still Belanja.)
 - A receipt with several products = one transaksi line per product.
 - One message can hold several transactions, e.g. "jual 2 serum dan 1 toner, Kak Lina belum bayar".
 - Never invent amounts. If a number is not visible or said, use null.

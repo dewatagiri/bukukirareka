@@ -1,8 +1,8 @@
 """Storage: Google Sheets (live) and in-memory (tests)."""
 from __future__ import annotations
 
-from core import (PRODUK_HEADERS, TRANSAKSI_HEADERS, DAH_BAYAR, BELUM_BAYAR, JUALAN,
-                  Product, current_stock)
+from core import (PRODUK_HEADERS, TRANSAKSI_HEADERS, BELUM_BAYAR, JUALAN,
+                  Product, current_stock, live)
 
 PRODUK_TAB, TRANSAKSI_TAB = "Produk", "Transaksi"
 
@@ -13,17 +13,19 @@ class BaseStore:
     def add_product(self, p: Product) -> None: ...
     def set_product_cost(self, p: Product, cost: float) -> None: ...
     def append_transactions(self, rows: list[list]) -> None: ...
-    def mark_paid(self, txn_ids: list[str], note: str) -> None: ...
+    def update_transactions(self, changes: dict[str, dict]) -> None:
+        """{txn_id: {column header: new value}} - used for payments and undo."""
     def refresh_stock_column(self) -> None: ...
 
     def next_id(self) -> str:
+        # counts undone rows too, so an ID is never reused
         ids = [str(t.get("ID", "")) for t in self.transactions()]
         n = max([int(i[1:]) for i in ids if i[:1] == "T" and i[1:].isdigit()] or [0])
         return f"T{n + 1:05d}"
 
     def unpaid_for(self, name: str) -> list[dict]:
         q = name.strip().lower()
-        return [t for t in self.transactions()
+        return [t for t in live(self.transactions())
                 if t.get("Jenis") == JUALAN and t.get("Status bayaran") == BELUM_BAYAR
                 and q and q in str(t.get("Pelanggan/Pihak", "")).lower()]
 
@@ -54,14 +56,13 @@ class MemoryStore(BaseStore):
         for row in rows:
             self._txns.append(dict(zip(TRANSAKSI_HEADERS, row)))
 
-    def mark_paid(self, txn_ids, note):
+    def update_transactions(self, changes):
         for t in self._txns:
-            if t["ID"] in txn_ids:
-                t["Status bayaran"] = DAH_BAYAR
-                t["Catatan"] = (str(t.get("Catatan") or "") + " " + note).strip()
+            if t["ID"] in changes:
+                t.update(changes[t["ID"]])
 
     def refresh_stock_column(self):
-        st = current_stock(self.products(), self._txns)
+        st = current_stock(self.products(), live(self._txns))
         for r in self._products:
             r["Stok semasa"] = st.get(r["Nama"], 0)
 
@@ -82,6 +83,8 @@ class SheetStore(BaseStore):
             ws = self.sh.worksheet(title)
         except gspread.WorksheetNotFound:
             ws = self.sh.add_worksheet(title=title, rows=1000, cols=len(headers))
+        if ws.col_count < len(headers):  # v1 Sheet getting the v1.1 columns
+            ws.add_cols(len(headers) - ws.col_count)
         if ws.row_values(1) != headers:
             ws.update(range_name="A1", values=[headers])
             ws.format(f"A1:{chr(64 + len(headers))}1", {"textFormat": {"bold": True}})
@@ -116,19 +119,21 @@ class SheetStore(BaseStore):
     def append_transactions(self, rows):
         self.wt.append_rows(rows, value_input_option="RAW", table_range="A1")
 
-    def mark_paid(self, txn_ids, note):
-        col_status = TRANSAKSI_HEADERS.index("Status bayaran") + 1
-        col_note = TRANSAKSI_HEADERS.index("Catatan") + 1
+    def update_transactions(self, changes):
+        from gspread.utils import rowcol_to_a1
+        data = []
         for row, r in self._records(self.wt):
-            if r.get("ID") in txn_ids:
-                self.wt.update_cell(row, col_status, DAH_BAYAR)
-                self.wt.update_cell(row, col_note, (r.get("Catatan", "") + " " + note).strip())
+            for col_name, value in changes.get(r.get("ID"), {}).items():
+                col = TRANSAKSI_HEADERS.index(col_name) + 1
+                data.append({"range": rowcol_to_a1(row, col), "values": [[value]]})
+        if data:  # one API call, however many cells
+            self.wt.batch_update(data, value_input_option="RAW")
 
     def refresh_stock_column(self):
         prods = self.products()
         if not prods:
             return
-        st = current_stock(prods, self.transactions())
+        st = current_stock(prods, live(self.transactions()))
         col = PRODUK_HEADERS.index("Stok semasa") + 1
         last = max(p.row for p in prods)
         cells = self.wp.range(2, col, last, col)
