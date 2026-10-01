@@ -33,6 +33,11 @@ BukuKira akan balas **"Betul?"**:
 | Props / sampel content | *beli ring light RM59* |
 | Boost / iklan | *boost TikTok RM30* |
 | Pelanggan dah bayar | *Kak Lina dah bayar* |
+| Pelanggan bayar sikit dulu | *Mira bayar RM50 dulu* |
+| Barang rosak / pecah | *1 serum pecah* |
+| Bagi sampel / buka untuk content | *bagi 2 toner sampel* |
+| Guna sendiri | *ambil 1 serum guna sendiri* |
+| Kira stok, jumpa lebih | *kira stok, ada lebih 1 toner* |
 | Produk baru | *produk baru Toner Rose kos 18 jual 35* |
 
 💡 Boleh sebut banyak sekali gus:
@@ -41,6 +46,15 @@ BukuKira akan balas **"Betul?"**:
 💡 Kalau tak sebut harga, BukuKira guna harga jual biasa dalam senarai produk.
 
 💡 Jual produk yang belum ada dalam senarai? BukuKira tambah sendiri.
+
+💡 Bayar sikit-sikit? BukuKira tolak dari jualan paling lama dulu, dan simpan baki.
+
+---
+
+## 2b. Tersalah simpan?
+
+Taip **batal yang tadi** (atau **/batal**). BukuKira tunjuk rekod terakhir, tekan **YA**, siap.
+Rekod tak hilang dari Sheet, cuma ditanda *Batal* dan tak dikira lagi.
 
 ---
 
@@ -51,15 +65,19 @@ BukuKira akan balas **"Betul?"**:
 | **laporan** | Untung, jualan, komisen, belanja bulan ni |
 | **laporan minggu ni** | Minggu ni sahaja |
 | **stok** | Stok setiap produk |
-| **hutang** | Siapa belum bayar |
+| **hutang** | Siapa belum bayar, dah berapa hari, dan butang 📲 untuk ingatkan dia |
 
 📅 **Setiap Ahad malam pukul 9**, BukuKira hantar ringkasan minggu secara automatik.
+
+⏰ **Hutang dah seminggu** (dan 2 minggu, 3 minggu...)? BukuKira ingatkan awak pukul 10 pagi.
+Tekan butang **📲 Ingatkan**: WhatsApp terbuka dengan mesej sopan dah siap. Pilih nama
+pelanggan, tekan hantar.
 
 ---
 
 ## 4. Faham laporan
 
-- **Untung bersih**: untung sebenar selepas tolak kos barang dan belanja.
+- **Untung bersih**: untung sebenar selepas tolak kos barang, belanja, dan stok rosak/sampel/hilang.
 - **Aliran tunai**: duit betul-betul masuk dan keluar poket, termasuk beli stok.
 - **Stok dalam tangan**: duit awak yang "tersimpan" dalam barang belum terjual.
 - **Laku cepat**: produk ni, restock.
@@ -77,7 +95,8 @@ Buka app **Google Sheets**, fail **BukuKira**, tab **Produk**. Di sini awak bole
 - Isi **tarikh luput**
 - Tulis **TIDAK** di kolum *Aktif* untuk produk yang dah tak jual
 
-Tersalah rekod? Betulkan terus dalam tab **Transaksi**.
+Tersalah rekod lama (bukan yang terakhir)? Betulkan terus dalam tab **Transaksi**,
+atau tulis **YA** di kolum *Batal* untuk buang rekod tu dari kiraan.
 
 ---
 

@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
-from core import (BELI_STOK, JUALAN, Product, complete_draft, current_stock, describe_draft,
-                  draft_to_row, format_report, format_stock, new_average_cost, num, rm, unpaid)
+import core
+from core import (BELI_STOK, JUALAN, PELARASAN, STOK_MASUK, DAH_BAYAR, Product,
+                  allocate_payment, complete_draft, current_stock, debt_list, describe_draft,
+                  describe_row, draft_to_row, format_report, format_stock, last_batch, live,
+                  new_average_cost, num, rm)
 from store import BaseStore
 
 
@@ -15,6 +18,10 @@ class BukuKira:
 
     def today(self) -> date:
         return self.now_fn().date()
+
+    def txns(self) -> list[dict]:
+        """Transactions that count (undone rows left out)."""
+        return live(self.store.transactions())
 
     # ------------------------------------------------------------ step 1
     def prepare(self, result: dict) -> tuple[str, dict | None]:
@@ -28,15 +35,18 @@ class BukuKira:
         if intent == "laporan":
             return self.report(result.get("tempoh") or "bulan"), None
         if intent == "stok":
-            return format_stock(products, self.store.transactions()), None
+            return self.stock(), None
         if intent == "hutang":
             return self.debts(), None
+        if intent == "batal_terakhir":
+            return self.prepare_undo()
 
         if intent == "rekod" and result.get("transaksi"):
             drafts = [complete_draft(t, products, self.today()) for t in result["transaksi"]]
-            stock = current_stock(products, self.store.transactions())
+            stock = current_stock(products, self.txns())
             for d in drafts:
-                if d.jenis == JUALAN and not d.produk_baru and d.kuantiti > stock.get(d.produk, 0):
+                keluar = d.jenis == JUALAN or (d.jenis == PELARASAN and d.kategori != STOK_MASUK)
+                if keluar and not d.produk_baru and d.kuantiti > stock.get(d.produk, 0):
                     d.warnings.append(f"Stok dalam rekod cuma {stock.get(d.produk, 0):g} unit.")
             msg = "Saya faham begini:\n\n" + "\n\n".join(describe_draft(d) for d in drafts)
             if result.get("transkrip"):
@@ -73,17 +83,45 @@ class BukuKira:
             return "\n".join(lines) + "\n\nBetul?", {"type": "produk_baru", "products": new, "raw": result}
 
         if intent == "bayar_hutang":
-            name = result.get("pihak_bayar") or ""
-            rows = self.store.unpaid_for(name)
-            if not rows:
-                return f"Tak jumpa hutang atas nama '{name}'. Taip 'hutang' untuk tengok senarai.", None
-            total = sum(num(t.get("Jumlah (RM)")) for t in rows)
-            lines = [f"{rows[0].get('Pelanggan/Pihak')} dah bayar {rm(total)}? Rekod ni akan ditanda 'Dah bayar':"]
-            lines += [f"  - {t['Tarikh']}: {t['Produk']} x{num(t['Kuantiti']):g} = {rm(num(t['Jumlah (RM)']))}" for t in rows]
-            return "\n".join(lines) + "\n\nBetul?", {"type": "bayar_hutang", "ids": [t["ID"] for t in rows], "raw": result}
+            return self.prepare_payment(result)
 
         return ("Maaf, saya tak pasti apa nak rekod. Cuba hantar gambar resit, voice note, "
                 "atau taip contoh: 'jual 2 serum RM90'. Taip /bantuan untuk panduan."), None
+
+    def prepare_payment(self, result: dict) -> tuple[str, dict | None]:
+        name = result.get("pihak_bayar") or ""
+        rows = self.store.unpaid_for(name)
+        if not rows:
+            return f"Tak jumpa hutang atas nama '{name}'. Taip 'hutang' untuk tengok senarai.", None
+        who = rows[0].get("Pelanggan/Pihak")
+        owed = round(sum(core.balance(t) for t in rows), 2)
+        amount = num(result.get("jumlah_bayar"), 0) or None
+        updates, extra = allocate_payment(rows, amount)
+        by_id = {t["ID"]: t for t in rows}
+        if amount is None or amount >= owed:
+            lines = [f"{who} dah bayar semua {rm(owed)}? Rekod ni akan ditanda 'Dah bayar':"]
+        else:
+            lines = [f"{who} bayar {rm(amount)} daripada {rm(owed)}. "
+                     f"Baki lepas ni: {rm(owed - amount)}", "Dikira dari jualan paling lama:"]
+        for tid, paid, status in updates:
+            t = by_id[tid]
+            tag = "selesai" if status == DAH_BAYAR else f"dibayar {rm(paid)} / {rm(num(t['Jumlah (RM)']))}"
+            lines.append(f"  - {t['Tarikh']}: {t['Produk']} x{num(t['Kuantiti']):g} ({tag})")
+        if extra:
+            lines.append(f"⚠️ Lebih {rm(extra)} dari jumlah hutang - lebihan tak direkod.")
+        notes = {t["ID"]: str(t.get("Catatan") or "") for t in rows}
+        return "\n".join(lines) + "\n\nBetul?", {"type": "bayar_hutang", "updates": updates,
+                                                 "notes": notes, "raw": result}
+
+    def prepare_undo(self) -> tuple[str, dict | None]:
+        rows = last_batch(self.store.transactions())
+        if not rows:
+            return "Tiada rekod untuk dibatalkan.", None
+        lines = ["Batalkan rekod terakhir ni?"] + [f"  - {describe_row(t)}" for t in rows]
+        if any(t.get("Jenis") == BELI_STOK for t in rows):
+            lines.append("⚠️ Kos seunit purata dalam tab Produk tak diubah balik - semak kalau perlu.")
+        lines.append("(Rekod kekal dalam Sheet, ditanda Batal = YA, dan tak dikira lagi.)")
+        return "\n".join(lines) + "\n\nBetul?", {"type": "batal", "ids": [t["ID"] for t in rows]}
 
     # ------------------------------------------------------------ step 2
     def commit(self, pending: dict, source: str) -> str:
@@ -95,8 +133,19 @@ class BukuKira:
             return f"✅ {len(pending['products'])} produk ditambah."
 
         if pending["type"] == "bayar_hutang":
-            self.store.mark_paid(pending["ids"], f"[dibayar {self.today().isoformat()}]")
-            return "✅ Ditanda dah bayar."
+            changes = {}
+            for tid, paid, status in pending["updates"]:
+                note = (f"[dibayar {self.today().isoformat()}]" if status == DAH_BAYAR
+                        else f"[bayar sebahagian {self.today().isoformat()}]")
+                changes[tid] = {"Dibayar (RM)": paid, "Status bayaran": status,
+                                "Catatan": (pending["notes"].get(tid, "") + " " + note).strip()}
+            self.store.update_transactions(changes)
+            return "✅ Bayaran direkod."
+
+        if pending["type"] == "batal":
+            self.store.update_transactions({tid: {"Batal": "YA"} for tid in pending["ids"]})
+            self.store.refresh_stock_column()
+            return f"↩️ {len(pending['ids'])} rekod dibatalkan."
 
         drafts = pending["drafts"]
         products = {p.nama: p for p in self.store.products()}
@@ -112,8 +161,7 @@ class BukuKira:
                 products[p.nama] = p
                 added.append(p.nama)
         # restock -> weighted average cost
-        txns = self.store.transactions()
-        stock = current_stock(list(products.values()), txns)
+        stock = current_stock(list(products.values()), self.txns())
         for d in drafts:
             if d.jenis == BELI_STOK and d.produk in products and d.produk not in added:
                 p = products[d.produk]
@@ -124,7 +172,8 @@ class BukuKira:
                 stock[p.nama] = stock.get(p.nama, 0) + d.kuantiti
         first = self.store.next_id()
         n0 = int(first[1:])
-        rows = [draft_to_row(d, f"T{n0 + i:05d}", source, now_iso) for i, d in enumerate(drafts)]
+        rows = [draft_to_row(d, f"T{n0 + i:05d}", source, now_iso, batch=first)
+                for i, d in enumerate(drafts)]
         self.store.append_transactions(rows)
         self.store.refresh_stock_column()
         msg = f"✅ Direkod ({len(rows)})."
@@ -142,18 +191,37 @@ class BukuKira:
             start, title = end.replace(day=1), "LAPORAN BULAN LEPAS"
         else:
             start, end, title = t.replace(day=1), t, "LAPORAN BULAN INI"
-        return format_report(title, self.store.transactions(), self.store.products(), start, end, t)
+        return format_report(title, self.txns(), self.store.products(), start, end, t)
 
     def weekly(self) -> str:
         t = self.today()
         start = t - timedelta(days=6)
-        return format_report("RINGKASAN MINGGUAN", self.store.transactions(),
-                             self.store.products(), start, t, t)
+        return format_report("RINGKASAN MINGGUAN", self.txns(), self.store.products(), start, t, t)
+
+    def stock(self) -> str:
+        return format_stock(self.store.products(), self.txns())
+
+    # ------------------------------------------------------------ debts
+    def debt_list(self) -> list[dict]:
+        return debt_list(self.txns(), self.today())
 
     def debts(self) -> str:
-        up = unpaid(self.store.transactions())
-        if not up:
+        dl = self.debt_list()
+        if not dl:
             return "🎉 Tiada siapa berhutang."
-        lines = [f"⏳ BELUM BAYAR: {rm(sum(up.values()))}"]
-        lines += [f"  - {k}: {rm(v)}" for k, v in sorted(up.items(), key=lambda x: -x[1])]
+        lines = [f"⏳ BELUM BAYAR: {rm(sum(d['baki'] for d in dl))}"]
+        lines += [f"  - {d['nama']}: {rm(d['baki'])} ({d['hari']} hari)" for d in dl]
         return "\n".join(lines)
+
+    def due_reminders(self, every_days: int = 7) -> list[dict]:
+        """Debts to nudge today: oldest unpaid sale is 7, 14, 21... days old.
+        Spaced out so the daily check doesn't nag her (or the customer) every day."""
+        return [d for d in self.debt_list() if d["hari"] > 0 and d["hari"] % every_days == 0]
+
+    @staticmethod
+    def reminder_text(debt: dict) -> str:
+        return core.reminder_text(debt)
+
+    @staticmethod
+    def whatsapp_link(debt: dict) -> str:
+        return core.whatsapp_link(core.reminder_text(debt))
