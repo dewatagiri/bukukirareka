@@ -31,7 +31,8 @@ REMIND_TIME = os.getenv("DEBT_REMINDER_TIME", "10:00")
 STATE_FILE = os.getenv("STATE_FILE", "bukukira_state.pickle")
 
 store = SheetStore(os.getenv("GOOGLE_CREDS_JSON", "service_account.json"), os.environ["SHEET_ID"])
-ai = Extractor(os.environ["GEMINI_API_KEY"], os.getenv("GEMINI_MODEL", "gemini-3.8-flash"))
+ai = Extractor(os.environ["GEMINI_API_KEY"], os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+               os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite"))
 app_logic = BukuKira(store, lambda: datetime.now(TZ))
 
 KEYBOARD = InlineKeyboardMarkup([[

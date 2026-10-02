@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from datetime import date
 
 from google import genai
-from google.genai import types
+from google.genai import errors, types
+
+log = logging.getLogger(__name__)
+
+# Gemini sometimes answers 503 "high demand" or 429 "rate limit" for a few seconds.
+RETRY_CODES = {429, 500, 503}
+RETRY_WAITS = (2, 5)  # seconds between attempts on the main model
 
 PROMPT = """You are the bookkeeping assistant for a small home-based seller in Malaysia.
 She (1) resells beauty/skincare products that she buys upfront from a friend, and
@@ -100,9 +108,27 @@ def _parse_json(text: str) -> dict:
 
 
 class Extractor:
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, fallback_model: str | None = None):
         self.client = genai.Client(api_key=api_key)
         self.model = model
+        self.fallback_model = fallback_model if fallback_model != model else None
+
+    def _generate(self, parts):
+        """Call Gemini, retrying a busy model, then trying the fallback model once."""
+        config = types.GenerateContentConfig(temperature=0, response_mime_type="application/json")
+        attempts = [self.model] * (len(RETRY_WAITS) + 1)
+        if self.fallback_model:
+            attempts.append(self.fallback_model)
+        for i, model in enumerate(attempts):
+            try:
+                return self.client.models.generate_content(model=model, contents=parts, config=config)
+            except errors.APIError as e:
+                if e.code not in RETRY_CODES or i == len(attempts) - 1:
+                    raise
+                wait = RETRY_WAITS[i] if i < len(RETRY_WAITS) else 0
+                log.warning("Gemini %s busy (%s); next try in %ss with %s",
+                            model, e.code, wait, attempts[i + 1])
+                time.sleep(wait)
 
     def extract(self, products, today: date, *, text: str | None = None,
                 media: bytes | None = None, mime: str | None = None,
@@ -114,10 +140,5 @@ class Extractor:
             parts.append(types.Part.from_bytes(data=media, mime_type=mime))
         if text:
             parts.append(f"Her message: {text}")
-        resp = self.client.models.generate_content(
-            model=self.model,
-            contents=parts,
-            config=types.GenerateContentConfig(temperature=0,
-                                               response_mime_type="application/json"),
-        )
+        resp = self._generate(parts)
         return _parse_json(resp.text)
